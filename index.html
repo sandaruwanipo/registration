@@ -38,7 +38,7 @@ function todayWitness(){const d=new Date();const n=d.getDate();const suffix=(n%1
 function isLong(){return $('services').value.trim().length>Number($('threshold').value||420)}
 function updatePreview(){const long=isLong();$('layoutStatus').textContent=$('printerMode').value+' · '+(long?'Long list · Page 2':'Short list · Page 1');}
 ['appDate','regNo','classNo','applicant','address','services','threshold'].forEach(id=>$(id).addEventListener('input',()=>{updatePreview();schedulePreview();}));
-function selectPrinter(mode){$('printerMode').value=mode;document.querySelectorAll('.printer-option').forEach(btn=>{const active=btn.dataset.printer===mode;btn.classList.toggle('active',active);btn.setAttribute('aria-pressed',String(active));});$('printerHint').textContent=mode==='ACH'?'Select Your Printer':'DSH spacing: 6 blank lines after the applicant name and 18 before the witness statement.';updatePreview();schedulePreview();$('status').textContent=mode+' printer spacing selected.';}
+function selectPrinter(mode){$('printerMode').value=mode;document.querySelectorAll('.printer-option').forEach(btn=>{const active=btn.dataset.printer===mode;btn.classList.toggle('active',active);btn.setAttribute('aria-pressed',String(active));});$('printerHint').textContent=mode==='ACH'?'Select Your Printer':'DSH sample spacing: 8 top, 6 after certificate text, 6 after applicant, 15 before witness.';updatePreview();schedulePreview();$('status').textContent=mode+' printer spacing selected.';}
 document.querySelectorAll('.printer-option').forEach(btn=>btn.addEventListener('click',()=>selectPrinter(btn.dataset.printer)));
 $('printerMode').addEventListener('change',()=>selectPrinter($('printerMode').value));
 async function showTrademarkPng(blob,statusText){
@@ -85,43 +85,113 @@ function setParagraphText(p,text,doc){const W='http://schemas.openxmlformats.org
 function findParagraphByStart(doc,start){const W='http://schemas.openxmlformats.org/wordprocessingml/2006/main';return [...doc.getElementsByTagNameNS(W,'p')].find(p=>[...p.getElementsByTagNameNS(W,'t')].map(t=>t.textContent).join('').startsWith(start));}
 function setApplicantComma(doc,applicant){const W='http://schemas.openxmlformats.org/wordprocessingml/2006/main';const p=[...doc.getElementsByTagNameNS(W,'p')].find(p=>[...p.getElementsByTagNameNS(W,'t')].map(t=>t.textContent).join('').includes('in the name of')&&[...p.getElementsByTagNameNS(W,'t')].some(t=>t.textContent===applicant));if(!p)return;const nodes=[...p.getElementsByTagNameNS(W,'t')];const i=nodes.findIndex(t=>t.textContent===applicant);if(i>=0&&nodes[i+1]&&/^\.\s*$/.test(nodes[i+1].textContent))nodes[i+1].textContent=nodes[i+1].textContent.replace(/^\./,',');}
 function findBody(doc){return doc.getElementsByTagNameNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main','body')[0];}
-function setShortListInline(doc,text){const W='http://schemas.openxmlformats.org/wordprocessingml/2006/main';const p=findParagraphByStart(doc,'I hereby certify');if(!p)throw new Error('Could not locate the certificate sentence in the master template.');const runs=[...p.getElementsByTagNameNS(W,'r')];let specRun=null,tailRun=null;for(const r of runs){const value=[...r.getElementsByTagNameNS(W,'t')].map(t=>t.textContent).join('');if(value.includes('(the list of services is attached herewith'))specRun=r;if(value.includes('---'))tailRun=r;}if(!specRun||!tailRun)throw new Error('Could not locate the goods/services placeholder in the certificate sentence.');function put(run,value){let t=run.getElementsByTagNameNS(W,'t')[0];if(!t){t=doc.createElementNS(W,'w:t');run.appendChild(t);}t.textContent=value;t.setAttributeNS('http://www.w3.org/XML/1998/namespace','xml:space','preserve');for(const extra of [...run.getElementsByTagNameNS(W,'t')].slice(1))extra.textContent='';}put(specRun,text);put(tailRun,' ---');} 
+function replaceTextAcrossParagraph(paragraph,pattern,replacement){
+  const W='http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+  const nodes=[...paragraph.getElementsByTagNameNS(W,'t')];
+  const full=nodes.map(n=>n.textContent||'').join('');
+  const match=full.match(pattern);
+  if(!match||match.index==null||!nodes.length)return false;
+  const start=match.index,end=start+match[0].length;
+  let offset=0,first=-1,last=-1,firstOffset=0,lastEnd=0;
+  for(let i=0;i<nodes.length;i++){
+    const value=nodes[i].textContent||'';
+    const nodeStart=offset,nodeEnd=nodeStart+value.length;
+    if(first<0&&start>=nodeStart&&start<nodeEnd){first=i;firstOffset=start-nodeStart;}
+    if(end>nodeStart&&end<=nodeEnd){last=i;lastEnd=end-nodeStart;break;}
+    offset=nodeEnd;
+  }
+  if(first<0||last<0)return false;
+  const before=(nodes[first].textContent||'').slice(0,firstOffset);
+  const after=(nodes[last].textContent||'').slice(lastEnd);
+  if(first===last){
+    nodes[first].textContent=before+replacement+after;
+    nodes[first].setAttributeNS('http://www.w3.org/XML/1998/namespace','xml:space','preserve');
+  }else{
+    nodes[first].textContent=before+replacement;
+    nodes[first].setAttributeNS('http://www.w3.org/XML/1998/namespace','xml:space','preserve');
+    for(let i=first+1;i<last;i++)nodes[i].textContent='';
+    nodes[last].textContent=after;
+    if(after)nodes[last].setAttributeNS('http://www.w3.org/XML/1998/namespace','xml:space','preserve');
+  }
+  return true;
+}
+function setShortListInline(doc,text){const p=findParagraphByStart(doc,'I hereby certify');if(!p)throw new Error('Could not locate the certificate sentence in the master template.');const placeholder=/\(the\s+list\s+of\s+(?:goods|services)\s+is\s+attached\s+herewith\)/i;if(!replaceTextAcrossParagraph(p,placeholder,text))throw new Error('Could not locate the goods/services placeholder in the certificate sentence.');replaceTextAcrossParagraph(p,/---/,' ---');}
+function attachedListWording(classNumber){const n=Number(String(classNumber).match(/\d+/)?.[0]);if(!Number.isInteger(n)||n<1||n>45)throw new Error('Please enter a valid Nice class number from 1 to 45.');return n<=34?'(the list of goods is attached herewith)':'(the list of services is attached herewith)';}
 function clearTemplateHighlights(doc){const W='http://schemas.openxmlformats.org/wordprocessingml/2006/main';for(const h of [...doc.getElementsByTagNameNS(W,'highlight')])h.parentNode.removeChild(h);for(const shd of [...doc.getElementsByTagNameNS(W,'shd')]){const fill=shd.getAttributeNS(W,'fill');if(fill&&['FFFF00','YELLOW','FFF2CC'].includes(fill.toUpperCase()))shd.parentNode.removeChild(shd);}}
 function removePageTwo(doc){const body=findBody(doc),W='http://schemas.openxmlformats.org/wordprocessingml/2006/main';const children=[...body.childNodes];let page2=false;for(const node of children){if(node.nodeType!==1)continue;if(node.localName==='p'){const txt=[...node.getElementsByTagNameNS(W,'t')].map(t=>t.textContent).join('');if(txt.startsWith('Registration Number:')&&txt.includes('Class:'))page2=true;}if(page2&&node.localName!=='sectPr')body.removeChild(node);}}
-function setBlankParagraphGap(doc,startText,endText,count){
+function setBlankParagraphGap(doc,startText,endText,count,options={}){
   const W='http://schemas.openxmlformats.org/wordprocessingml/2006/main';
-  const body=findBody(doc);const direct=[...body.children];
-  const textOf=p=>[...p.getElementsByTagNameNS(W,'t')].map(t=>t.textContent).join('').trim();
+  const body=findBody(doc),direct=[...body.children];
+  const textOf=p=>[...p.getElementsByTagNameNS(W,'t')].map(t=>t.textContent||'').join('').trim();
   const start=direct.findIndex(n=>n.localName==='p'&&textOf(n).includes(startText));
   const end=direct.findIndex((n,i)=>i>start&&n.localName==='p'&&textOf(n).includes(endText));
   if(start<0||end<0||end<=start)return;
   const between=direct.slice(start+1,end);
   const blanks=between.filter(n=>n.localName==='p'&&!textOf(n));
-  let blankTemplate=blanks[0];
-  for(const node of between){if(node.localName==='p'&&!textOf(node))node.parentNode.removeChild(node);}
-  if(!blankTemplate){blankTemplate=doc.createElementNS(W,'w:p');}
+  const template=blanks[0];
+  for(const node of blanks)node.parentNode.removeChild(node);
   const endNode=direct[end];
-  for(let i=0;i<count;i++)body.insertBefore(blankTemplate.cloneNode(true),endNode);
+  for(let i=0;i<count;i++){
+    const blank=template?template.cloneNode(true):doc.createElementNS(W,'w:p');
+    if(options.fontHalfPoints){
+      let r=blank.getElementsByTagNameNS(W,'r')[0];
+      if(!r){r=doc.createElementNS(W,'w:r');blank.appendChild(r);}
+      let rPr=r.getElementsByTagNameNS(W,'rPr')[0];
+      if(!rPr){rPr=doc.createElementNS(W,'w:rPr');r.insertBefore(rPr,r.firstChild);}
+      let sz=rPr.getElementsByTagNameNS(W,'sz')[0];
+      if(!sz){sz=doc.createElementNS(W,'w:sz');rPr.appendChild(sz);}
+      sz.setAttributeNS(W,'w:val',String(options.fontHalfPoints));
+    }
+    body.insertBefore(blank,endNode);
+  }
+}
+function setLeadingBlankParagraphs(doc,endText,count,fontHalfPoints){
+  const W='http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+  const body=findBody(doc),direct=[...body.children];
+  const textOf=p=>[...p.getElementsByTagNameNS(W,'t')].map(t=>t.textContent||'').join('').trim();
+  const end=direct.find(n=>n.localName==='p'&&textOf(n).includes(endText));
+  if(!end)return;
+  const preceding=[];
+  for(let p=end.previousElementSibling;p&&p.localName==='p'&&!textOf(p);p=p.previousElementSibling)preceding.unshift(p);
+  const template=preceding[0];
+  for(const p of preceding)p.parentNode.removeChild(p);
+  for(let i=0;i<count;i++){
+    const blank=template?template.cloneNode(true):doc.createElementNS(W,'w:p');
+    if(fontHalfPoints){
+      let r=blank.getElementsByTagNameNS(W,'r')[0];
+      if(!r){r=doc.createElementNS(W,'w:r');blank.appendChild(r);}
+      let rPr=r.getElementsByTagNameNS(W,'rPr')[0];
+      if(!rPr){rPr=doc.createElementNS(W,'w:rPr');r.insertBefore(rPr,r.firstChild);}
+      let sz=rPr.getElementsByTagNameNS(W,'sz')[0];
+      if(!sz){sz=doc.createElementNS(W,'w:sz');rPr.appendChild(sz);}
+      sz.setAttributeNS(W,'w:val',String(fontHalfPoints));
+    }
+    body.insertBefore(blank,end);
+  }
 }
 function alignCertificateElements(doc){
   const W='http://schemas.openxmlformats.org/wordprocessingml/2006/main';
   const paragraphs=[...doc.getElementsByTagNameNS(W,'p')];
   for(const p of paragraphs){const txt=[...p.getElementsByTagNameNS(W,'t')].map(t=>t.textContent).join('');if(txt.startsWith('Registration Number:')&&txt.includes('Class:')){let pPr=p.getElementsByTagNameNS(W,'pPr')[0];if(!pPr){pPr=doc.createElementNS(W,'w:pPr');p.insertBefore(pPr,p.firstChild);}let jc=pPr.getElementsByTagNameNS(W,'jc')[0];if(!jc){jc=doc.createElementNS(W,'w:jc');pPr.appendChild(jc);}jc.setAttributeNS(W,'w:val','right');}}
   const logo=paragraphs.find(p=>p.getElementsByTagNameNS(W,'drawing').length>0);if(logo){let pPr=logo.getElementsByTagNameNS(W,'pPr')[0];if(!pPr){pPr=doc.createElementNS(W,'w:pPr');logo.insertBefore(pPr,logo.firstChild);}let jc=pPr.getElementsByTagNameNS(W,'jc')[0];if(!jc){jc=doc.createElementNS(W,'w:jc');pPr.appendChild(jc);}jc.setAttributeNS(W,'w:val','right');}
-  // ACH is the original master spacing. DSH spacing is taken from the
-  // separately supplied DSH certificate (256043.docx).
+  // Measured against the supplied ACH.docx and DSH.doc samples.
+  // Both use US Letter, 3.00 cm left / 3.02 cm right, 2.50 cm top,
+  // 1.59 cm bottom margins and justified body text.
   const printer=$('printerMode').value;
-  const applicantToAct=printer==='DSH'?6:4;
-  const actToWitness=printer==='DSH'?18:19;
-  setBlankParagraphGap(doc,'in the name of','under the provisions',applicantToAct);
-  setBlankParagraphGap(doc,'under the provisions','Witness my hand on this ',actToWitness);
+  const dsh=printer==='DSH';
+  setLeadingBlankParagraphs(doc,'Date of Application:',dsh?8:7,dsh?22:null);
+  setBlankParagraphGap(doc,'Date of Application:','I hereby certify',2);
+  setBlankParagraphGap(doc,'I hereby certify','in the name of',dsh?6:5);
+  setBlankParagraphGap(doc,'in the name of','under the provisions',6);
+  setBlankParagraphGap(doc,'under the provisions','Witness my hand on this ',dsh?15:18);
+
 }
 async function buildCertificateBlob(){if(!window.JSZip)throw new Error('The DOCX library did not load. Check your internet connection and refresh.');const zip=await JSZip.loadAsync(TEMPLATE_B64,{base64:true});const xmlFile=zip.file('word/document.xml');if(!xmlFile)throw new Error('The master template document.xml is missing.');const xml=await xmlFile.async('string');const parser=new DOMParser();const doc=parser.parseFromString(xml,'application/xml');if(doc.getElementsByTagName('parsererror').length)throw new Error('The master template XML could not be read.');
 const appDate=$('appDate').value.trim(),reg=$('regNo').value.trim(),cls=$('classNo').value.trim(),app=$('applicant').value.trim(),addr=$('address').value.trim(),services=$('services').value.trim(),witness=$('witnessDate').value;
 if(!appDate||!reg||!cls||!app||!addr||!services)throw new Error('Please complete all certificate fields.');
 replaceExact(doc,'03/10/2022',appDate,1);replaceExact(doc,'279082',reg,2);replaceExact(doc,'35',cls,2);replaceExact(doc,'Ecolab USA Inc',app,1);setApplicantComma(doc,app);replaceExact(doc,'1  Ecolab Place, Saint Paul, Minnesota 55102, United States of America',' '+addr,1);
 const witnessParts=witness.match(/^(\d+)(st|nd|rd|th) day of (.+)$/);if(witnessParts){replaceExact(doc,'04',witnessParts[1],1);replaceExact(doc,'th',witnessParts[2],1);replaceExact(doc,'day of ','day of ',1);replaceExact(doc,'November, 2026',witnessParts[3],1);}else{const wp=findParagraphByStart(doc,'Witness my hand on this ');if(wp)setParagraphText(wp,'Witness my hand on this '+witness,doc);}
-const long=isLong();if(long){const page2Spec=findParagraphByStart(doc,'business consulting and information services;');if(!page2Spec)throw new Error('Could not locate the page 2 goods/services paragraph in the master template.');setParagraphText(page2Spec,services.charAt(0).toLocaleUpperCase()+services.slice(1),doc);}else{setShortListInline(doc,services);removePageTwo(doc);}alignCertificateElements(doc);clearTemplateHighlights(doc);
+const long=isLong();if(long){setShortListInline(doc,attachedListWording(cls));const page2Spec=findParagraphByStart(doc,'business consulting and information services;');if(!page2Spec)throw new Error('Could not locate the page 2 goods/services paragraph in the master template.');setParagraphText(page2Spec,services.charAt(0).toLocaleUpperCase()+services.slice(1),doc);}else{setShortListInline(doc,services);removePageTwo(doc);}alignCertificateElements(doc);clearTemplateHighlights(doc);
 zip.file('word/document.xml',new XMLSerializer().serializeToString(doc));if(replacementPng){const media=zip.file('word/media/image1.png');if(!media)throw new Error('Could not locate the original trademark image in the template.');zip.file('word/media/image1.png',replacementPng);}return await zip.generateAsync({type:'blob',compression:'DEFLATE'});}
 let previewTimer=null,previewBusy=false,previewAgain=false;
 function schedulePreview(){clearTimeout(previewTimer);previewTimer=setTimeout(renderCertificatePreview,650);}
